@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>考试训练系统 · 首页</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif; background:#f5f6f8; color:#1f2933; line-height:1.6; }
+  .container { max-width:640px; margin:0 auto; padding:24px 16px 60px; }
+  h1 { font-size:22px; margin:8px 0 4px; }
+  .sub { color:#6b7280; font-size:14px; margin-bottom:20px; }
+  .card { background:#fff; border-radius:14px; padding:18px; box-shadow:0 1px 3px rgba(0,0,0,.08); margin-bottom:16px; }
+  label { display:block; font-weight:600; margin:14px 0 6px; font-size:15px; }
+  input[type=text], select { width:100%; padding:12px 14px; font-size:16px; border:1px solid #d9dee5; border-radius:10px; background:#fff; }
+  button { width:100%; padding:14px; font-size:17px; font-weight:600; color:#fff; background:#2563eb; border:none; border-radius:12px; margin-top:16px; cursor:pointer; }
+  button:active { background:#1d4ed8; }
+  button:disabled { opacity:.5; }
+  .links { text-align:center; margin-top:18px; font-size:14px; }
+  .links a { color:#2563eb; text-decoration:none; margin:0 8px; }
+  .muted { color:#6b7280; font-size:13px; }
+  .toast { position:fixed; left:50%; bottom:24px; transform:translateX(-50%); background:#111827; color:#fff; padding:10px 16px; border-radius:10px; font-size:14px; opacity:0; transition:.3s; pointer-events:none; z-index:99; }
+  .toast.show { opacity:1; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>产品知识考试训练</h1>
+  <div class="sub">输入姓名，选择章节，开始你的练习</div>
+
+  <div class="card">
+    <label for="studentName">学生姓名</label>
+    <input type="text" id="studentName" placeholder="请输入你的姓名" autocomplete="off" />
+
+    <label for="chapterSelect">按知识点专项突破（章节，可留空=全部）</label>
+    <select id="chapterSelect">
+      <option value="">全部知识点</option>
+    </select>
+
+    <label for="difficultySelect">难度筛选</label>
+    <select id="difficultySelect">
+      <option value="">全部难度</option>
+      <option value="1">简单</option>
+      <option value="2">中等</option>
+      <option value="3">困难</option>
+    </select>
+
+    <label style="display:flex;align-items:center;gap:10px;font-weight:600;margin-top:14px;cursor:pointer">
+      <input type="checkbox" id="wrongOnly" style="width:18px;height:18px" /> 只练我的错题
+    </label>
+
+    <button id="startBtn">开始练习</button>
+  </div>
+
+  <div class="links">
+    <a href="search.html">题库搜索</a> · <a href="admin.html">老师统计</a> · <a href="import.html">导入题库</a>
+  </div>
+  <p class="muted" style="text-align:center;margin-top:14px;">每次练习将从所选章节随机抽取 10 道题</p>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<!-- ============ Supabase 初始化（替换下面两个常量即可接入你的项目） ============ -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+  const SUPABASE_URL = 'https://qfpdjtjstqpeawmzesrl.supabase.co';
+  const SUPABASE_ANON_KEY = 'sb_publishable_Rl7i4y-_sQE8J8U1_3eieQ_gfkywzMk';
+  const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+</script>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  function toast(msg) {
+    const t = $('toast'); t.textContent = msg; t.classList.add('show');
+    setTimeout(() => t.classList.remove('show'), 2200);
+  }
+
+  // 记住上次用的名字，体验更好
+  $('studentName').value = localStorage.getItem('studentName') || '';
+
+  // 动态拉取章节列表（questions 表 chapter 字段去重）
+  async function loadChapters() {
+    const sel = $('chapterSelect');
+    const { data, error } = await supabase
+      .from('questions')
+      .select('chapter')
+      .not('chapter', 'is', null);
+    if (error) { sel.innerHTML = '<option value="">章节加载失败</option>'; toast('加载章节失败：' + error.message); return; }
+    const chapters = [...new Set((data || []).map(r => r.chapter).filter(Boolean))].sort();
+    if (!chapters.length) { sel.innerHTML = '<option value="">暂无章节（请先导入题库）</option>'; return; }
+    sel.innerHTML = '<option value="">全部知识点</option>' + chapters.map(c => `<option value="${c.replace(/"/g,'&quot;')}">${c}</option>`).join('');
+  }
+  loadChapters();
+
+  $('startBtn').addEventListener('click', () => {
+    const name = $('studentName').value.trim();
+    const chapter = $('chapterSelect').value;
+    const difficulty = $('difficultySelect').value;
+    const wrong = $('wrongOnly').checked;
+    if (!name) { toast('请先输入姓名'); return; }
+    localStorage.setItem('studentName', name);
+    const p = new URLSearchParams({ name });
+    if (chapter) p.set('chapter', chapter);
+    if (difficulty) p.set('difficulty', difficulty);
+    if (wrong) p.set('wrong', '1');
+    location.href = `quiz.html?${p.toString()}`;
+  });
+</script>
+</body>
+</html>

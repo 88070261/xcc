@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>题库搜索 · 考试训练系统</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif; background:#f5f6f8; color:#1f2933; line-height:1.6; }
+  .container { max-width:720px; margin:0 auto; padding:20px 16px 60px; }
+  h1 { font-size:22px; margin:8px 0 4px; }
+  .sub { color:#6b7280; font-size:14px; margin-bottom:14px; }
+  .searchbar { display:flex; gap:8px; }
+  input[type=text] { flex:1; padding:13px 14px; font-size:16px; border:1px solid #d9dee5; border-radius:10px; background:#fff; }
+  .searchbar button { width:auto; padding:13px 20px; margin:0; white-space:nowrap; }
+  button { padding:13px 18px; font-size:16px; font-weight:600; color:#fff; background:#2563eb; border:none; border-radius:10px; cursor:pointer; }
+  button:active { background:#1d4ed8; }
+  button.secondary { background:#e5e7eb; color:#1f2933; }
+  .card { background:#fff; border-radius:14px; padding:16px 18px; box-shadow:0 1px 3px rgba(0,0,0,.08); margin-bottom:14px; }
+  .qtext { font-size:16px; font-weight:600; margin-bottom:8px; }
+  .tag { display:inline-block; background:#eef2ff; color:#4338ca; border-radius:6px; padding:2px 8px; font-size:12px; margin:0 6px 8px 0; }
+  .tag.d1 { background:#ecfdf5; color:#047857; }
+  .tag.d2 { background:#fffbeb; color:#b45309; }
+  .tag.d3 { background:#fef2f2; color:#b91c1c; }
+  .option { padding:10px 12px; border:1px solid #e5e7eb; border-radius:9px; margin:6px 0; font-size:15px; }
+  .option.correct { border-color:#16a34a; background:#f0fdf4; font-weight:600; }
+  .answer-box { margin-top:10px; padding:10px 12px; background:#f8fafc; border-radius:9px; font-size:14px; display:none; }
+  .answer-box.show { display:block; }
+  .pill { display:inline-block; padding:1px 8px; border-radius:6px; font-size:13px; background:#dcfce7; color:#166534; font-weight:600; }
+  .meta { color:#6b7280; font-size:13px; margin-bottom:6px; }
+  .links { text-align:center; margin-top:16px; font-size:14px; }
+  .links a { color:#2563eb; text-decoration:none; margin:0 8px; }
+  .muted { color:#6b7280; font-size:13px; }
+  .toast { position:fixed; left:50%; bottom:24px; transform:translateX(-50%); background:#111827; color:#fff; padding:10px 16px; border-radius:10px; font-size:14px; opacity:0; transition:.3s; pointer-events:none; z-index:99; }
+  .toast.show { opacity:1; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>题库搜索</h1>
+  <div class="sub">输入关键词（如「消防」「牛顿定律」「CT」），跨题目与选项模糊匹配</div>
+
+  <div class="searchbar">
+    <input type="text" id="kw" placeholder="输入关键词搜索题目…" autocomplete="off" />
+    <button id="searchBtn">搜索</button>
+  </div>
+
+  <div id="status" class="muted" style="margin:12px 0"></div>
+  <div id="results"></div>
+
+  <div class="links">
+    <a href="index.html">学生首页</a> · <a href="admin.html">老师统计</a> · <a href="import.html">导入题库</a>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<!-- ============ Supabase 初始化（替换下面两个常量即可接入你的项目） ============ -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+  const SUPABASE_URL = 'https://qfpdjtjstqpeawmzesrl.supabase.co';
+  const SUPABASE_ANON_KEY = 'sb_publishable_Rl7i4y-_sQE8J8U1_3eieQ_gfkywzMk';
+  const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+</script>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  function toast(msg) { const t = $('toast'); t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2200); }
+
+  const OPT_KEYS = ['option_a','option_b','option_c','option_d','option_e','option_f','option_g','option_h','option_i'];
+  const LETTERS = ['A','B','C','D','E','F','G','H','I'];
+  const DIFF = { 1: '简单', 2: '中等', 3: '难' };
+
+  function escapeLike(s) { return s.replace(/[\\%]/g, m => '\\' + m); }
+  function buildOr(kw) {
+    const pat = `%${escapeLike(kw)}%`;
+    const cols = ['question', ...OPT_KEYS, 'chapter', 'explanation'];
+    return cols.map(c => `${c}.ilike.${pat}`).join(',');
+  }
+
+  function parseAnswer(ans) {
+    return String(ans || '').split(',').map(s => s.trim().toUpperCase()).filter(Boolean).sort();
+  }
+
+  async function doSearch() {
+    const kw = $('kw').value.trim();
+    if (!kw) { toast('请输入关键词'); return; }
+    $('status').textContent = '搜索中…';
+    $('results').innerHTML = '';
+
+    const { data, error } = await supabase
+      .from('questions')
+      .select('id, question, option_a, option_b, option_c, option_d, option_e, option_f, option_g, option_h, option_i, answer, chapter, difficulty, explanation')
+      .or(buildOr(kw))
+      .order('id')
+      .limit(200);
+
+    if (error) { $('status').textContent = '搜索失败：' + error.message; return; }
+    if (!data || !data.length) { $('status').textContent = `没有找到与「${kw}」相关的题目。`; return; }
+    $('status').textContent = `找到 ${data.length} 道相关题目${data.length >= 200 ? '（已显示前 200 条）' : ''}。默认隐藏答案，点「显示答案」自测。`;
+
+    $('results').innerHTML = data.map(renderCard).join('');
+    // 绑定显示答案按钮
+    $('results').querySelectorAll('.toggle').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const box = btn.parentElement.querySelector('.answer-box');
+        const shown = box.classList.toggle('show');
+        btn.textContent = shown ? '隐藏答案' : '显示答案';
+      });
+    });
+  }
+
+  function renderCard(q) {
+    const opts = LETTERS.map((L, i) => ({ L, text: q[OPT_KEYS[i]] })).filter(o => o.text != null && o.text !== '');
+    const correct = parseAnswer(q.answer);
+    const optsHtml = opts.map(o => {
+      const cls = 'option' + (correct.includes(o.L) ? ' correct' : '');
+      return `<div class="${cls}">${o.L}. ${escapeHtml(o.text)}</div>`;
+    }).join('');
+    const d = q.difficulty;
+    const dCls = d === 1 ? 'd1' : d === 2 ? 'd2' : d === 3 ? 'd3' : '';
+    return `<div class="card">
+      <div><span class="tag">${escapeHtml(q.chapter || '未分类')}</span><span class="tag ${dCls}">${DIFF[d] || '难度' + d}</span></div>
+      <div class="qtext">${escapeHtml(q.question)}</div>
+      ${optsHtml}
+      <button class="secondary toggle" style="margin-top:10px;padding:8px 14px;font-size:14px">显示答案</button>
+      <div class="answer-box">
+        <div>正确答案：<span class="pill">${correct.join('、')}</span></div>
+        ${q.explanation ? `<div class="meta" style="margin-top:6px">解析：${escapeHtml(q.explanation)}</div>` : ''}
+      </div>
+    </div>`;
+  }
+
+  function escapeHtml(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }
+
+  $('searchBtn').addEventListener('click', doSearch);
+  $('kw').addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
+
+  // 支持 ?q=关键词 直接进入搜索
+  const initQ = new URLSearchParams(location.search).get('q');
+  if (initQ) { $('kw').value = initQ; doSearch(); }
+</script>
+</body>
+</html>

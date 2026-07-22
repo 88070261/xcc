@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>答题中 · 考试训练系统</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif; background:#f5f6f8; color:#1f2933; line-height:1.6; }
+  .container { max-width:640px; margin:0 auto; padding:20px 16px 60px; }
+  .topbar { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; }
+  .topbar a { color:#2563eb; text-decoration:none; font-size:14px; }
+  .progress { font-size:14px; color:#6b7280; margin-bottom:12px; }
+  .card { background:#fff; border-radius:14px; padding:18px; box-shadow:0 1px 3px rgba(0,0,0,.08); margin-bottom:16px; }
+  .qtext { font-size:17px; font-weight:600; margin-bottom:6px; }
+  .tag { display:inline-block; background:#eef2ff; color:#4338ca; border-radius:6px; padding:2px 8px; font-size:12px; margin-bottom:10px; }
+  .option { display:block; padding:13px 14px; border:1px solid #d9dee5; border-radius:10px; margin:8px 0; cursor:pointer; font-size:16px; user-select:none; }
+  .option:active { background:#f1f5f9; }
+  .option.selected { border-color:#2563eb; background:#eff6ff; }
+  .option.correct { border-color:#16a34a; background:#f0fdf4; }
+  .option.wrong { border-color:#dc2626; background:#fef2f2; }
+  button { width:100%; padding:14px; font-size:17px; font-weight:600; color:#fff; background:#2563eb; border:none; border-radius:12px; margin-top:12px; cursor:pointer; }
+  button:active { background:#1d4ed8; }
+  button.secondary { background:#e5e7eb; color:#1f2933; }
+  button:disabled { opacity:.5; }
+  .feedback { margin-top:12px; padding:12px 14px; border-radius:10px; font-size:15px; display:none; }
+  .feedback.show { display:block; }
+  .feedback.ok { background:#f0fdf4; color:#166534; border:1px solid #bbf7d0; }
+  .feedback.no { background:#fef2f2; color:#991b1b; border:1px solid #fecaca; }
+  .explain { margin-top:8px; font-size:14px; color:#374151; }
+  .muted { color:#6b7280; font-size:13px; }
+  .toast { position:fixed; left:50%; bottom:24px; transform:translateX(-50%); background:#111827; color:#fff; padding:10px 16px; border-radius:10px; font-size:14px; opacity:0; transition:.3s; pointer-events:none; z-index:99; }
+  .toast.show { opacity:1; }
+  .result { text-align:center; }
+  .score-big { font-size:46px; font-weight:700; color:#2563eb; }
+  .wrong-item { text-align:left; border-top:1px solid #eee; padding:12px 0; }
+  .wrong-item .a { font-weight:600; }
+  .pill { display:inline-block; padding:1px 8px; border-radius:6px; font-size:12px; margin-left:6px; }
+  .pill.right { background:#f0fdf4; color:#166534; }
+  .pill.err { background:#fef2f2; color:#991b1b; }
+</style>
+</head>
+<body>
+<div class="container" id="app">
+  <div class="topbar">
+    <a href="index.html">← 返回</a>
+    <span class="muted" id="who"></span>
+  </div>
+  <div id="loading" class="card">题目加载中…</div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<!-- ============ Supabase 初始化（替换下面两个常量即可接入你的项目） ============ -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+  const SUPABASE_URL = 'https://qfpdjtjstqpeawmzesrl.supabase.co';
+  const SUPABASE_ANON_KEY = 'sb_publishable_Rl7i4y-_sQE8J8U1_3eieQ_gfkywzMk';
+  const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+</script>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  function toast(msg) { const t = $('toast'); t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2200); }
+
+  const params = new URLSearchParams(location.search);
+  const STUDENT = params.get('name') || '';
+  const CHAPTER = params.get('chapter') || '';
+  const DIFF = params.get('difficulty') || '';
+  const WRONG = params.get('wrong') === '1';
+
+  // 顶部/心跳显示用的模式标签
+  const DIFF_LABEL = { 1: '简单', 2: '中等', 3: '困难' };
+  const tags = [];
+  if (WRONG) tags.push('错题特训');
+  if (DIFF) tags.push((DIFF_LABEL[Number(DIFF)] || DIFF) + '题');
+  if (CHAPTER) tags.push(CHAPTER);
+  if (!tags.length) tags.push('全部随机');
+  const STATUS_LABEL = tags.join(' / ');
+  $('who').textContent = STUDENT ? `${STUDENT} · ${STATUS_LABEL}` : STATUS_LABEL;
+
+  // ---------- 在线心跳：每 30 秒 upsert 一次 user_status ----------
+  let heartbeatTimer = null;
+  async function heartbeat() {
+    if (!STUDENT) return;
+    const { error } = await supabase.from('user_status').upsert(
+      { student_name: STUDENT, current_chapter: STATUS_LABEL, last_active: new Date().toISOString() },
+      { onConflict: 'student_name' }
+    );
+    if (error) console.warn('心跳更新失败', error.message);
+  }
+
+  // ---------- 工具：判断答案是否为多选题 ----------
+  const isMulti = (ans) => ans.includes(',');
+
+  // 归一化：把 "C" / "C,F,H,I" 变成排序后的字母数组
+  function parseAnswer(ans) { return String(ans).split(',').map(s => s.trim().toUpperCase()).filter(Boolean).sort(); }
+
+  // ---------- 状态 ----------
+  let QUESTIONS = [];
+  let idx = 0;
+  const answers = {};       // questionId -> 用户选中的字母数组
+  const reviewed = {};      // questionId -> 是否已提交本题（看过解析）
+
+  // ---------- 取题：按筛选条件随机抽 10 道 ----------
+  const SELECT_COLS = 'id, question, option_a, option_b, option_c, option_d, option_e, option_f, option_g, option_h, option_i, answer, chapter, difficulty, explanation';
+
+  async function loadQuestions() {
+    let rows = null, baseErr = null;
+
+    if (WRONG) {
+      // 只练错题：先取该生的错题 question_id，再取题目（可叠加章节/难度筛选）
+      const { data: wb, error: e2 } = await supabase
+        .from('wrong_books').select('question_id').eq('student_name', STUDENT);
+      if (e2) { $('loading').textContent = '加载失败：' + e2.message; return; }
+      const ids = [...new Set((wb || []).map(r => r.question_id))];
+      if (!ids.length) {
+        $('loading').innerHTML = '🎉 你暂时没有错题记录，先去随机练一组吧！<br><br><button onclick="location.href=\'index.html\'">返回首页</button>';
+        return;
+      }
+      let q = supabase.from('questions').select(SELECT_COLS).in('id', ids);
+      if (CHAPTER) q = q.eq('chapter', CHAPTER);
+      if (DIFF) q = q.eq('difficulty', Number(DIFF));
+      const r = await q; rows = r.data; baseErr = r.error;
+    } else {
+      let q = supabase.from('questions').select(SELECT_COLS);
+      if (CHAPTER) q = q.eq('chapter', CHAPTER);
+      if (DIFF) q = q.eq('difficulty', Number(DIFF));
+      const r = await q; rows = r.data; baseErr = r.error;
+    }
+
+    if (baseErr) { $('loading').textContent = '加载失败：' + baseErr.message; return; }
+    if (!rows || !rows.length) { $('loading').textContent = '没有符合条件的题目，换个筛选条件试试。'; return; }
+
+    // 洗牌
+    for (let i = rows.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [rows[i], rows[j]] = [rows[j], rows[i]]; }
+    QUESTIONS = rows.slice(0, Math.min(10, rows.length));
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
+    heartbeat(); // 立即上报一次
+    heartbeatTimer = setInterval(heartbeat, 30000);
+    idx = 0;
+    render();
+  }
+
+  // ---------- 渲染单题 ----------
+  function render() {
+    const q = QUESTIONS[idx];
+    const OPT_KEYS = ['option_a', 'option_b', 'option_c', 'option_d', 'option_e', 'option_f', 'option_g', 'option_h', 'option_i'];
+    const opts = ['A','B','C','D','E','F','G','H','I'].map((L, i) => ({ L, text: q[OPT_KEYS[i]] })).filter(o => o.text != null && o.text !== '');
+    const multi = isMulti(q.answer);
+    const chosen = answers[q.id] || [];
+    const done = reviewed[q.id];
+
+    const optsHtml = opts.map(o => {
+      let cls = 'option';
+      if (chosen.includes(o.L)) cls += ' selected';
+      if (done) {
+        const correctSet = parseAnswer(q.answer);
+        if (correctSet.includes(o.L)) cls += ' correct';
+        else if (chosen.includes(o.L)) cls += ' wrong';
+      }
+      return `<div class="${cls}" data-letter="${o.L}">${o.L}. ${escapeHtml(o.text)}</div>`;
+    }).join('');
+
+    let feedbackHtml = '';
+    if (done) {
+      const correctSet = parseAnswer(q.answer);
+      const ok = arraysEqual(chosen.slice().sort(), correctSet);
+      feedbackHtml = `<div class="feedback show ${ok ? 'ok' : 'no'}">
+        本题${ok ? '答对 ✓' : '答错 ✗'}　正确答案：${correctSet.join('、')}
+        <div class="explain">${q.explanation ? '解析：' + escapeHtml(q.explanation) : '（暂无解析）'}</div>
+      </div>`;
+    }
+
+    const isLast = idx === QUESTIONS.length - 1;
+    $('app').innerHTML = `
+      <div class="topbar"><a href="index.html">← 返回</a><span class="muted">${STUDENT} · ${CHAPTER}</span></div>
+      <div class="progress">第 ${idx + 1} / ${QUESTIONS.length} 题${multi ? '（多选）' : ''}</div>
+      <div class="card">
+        <div class="tag">${escapeHtml(q.chapter || '')}</div>
+        <div class="qtext">${escapeHtml(q.question)}</div>
+        <div id="opts">${optsHtml}</div>
+        ${feedbackHtml}
+        <button id="submitOne" ${done ? 'disabled' : ''}>${done ? '已提交本题' : '提交本题'}</button>
+        <button id="nextBtn" class="secondary" ${isLast ? 'style="display:none"' : ''}>下一题 →</button>
+        <button id="finishBtn">${isLast ? '交卷并查看成绩' : '提前交卷'}</button>
+      </div>
+      <p class="muted" style="text-align:center">提交本题可立即看对错与解析；也可直接点“交卷”统一提交。</p>
+    `;
+
+    // 选项点击
+    if (!done) {
+      $('opts').querySelectorAll('.option').forEach(el => {
+        el.addEventListener('click', () => {
+          const L = el.dataset.letter;
+          if (multi) {
+            const pos = chosen.indexOf(L);
+            if (pos >= 0) chosen.splice(pos, 1); else chosen.push(L);
+          } else {
+            chosen.length = 0; chosen.push(L);
+          }
+          answers[q.id] = chosen.slice();
+          render();
+        });
+      });
+    }
+    const so = $('submitOne'); if (so && !done) so.addEventListener('click', () => submitOne(q));
+    const nb = $('nextBtn'); if (nb && !isLast) nb.addEventListener('click', () => { idx++; render(); });
+    $('finishBtn').addEventListener('click', finish);
+  }
+
+  function submitOne(q) {
+    if (!answers[q.id] || !answers[q.id].length) { toast('请先选择一个选项'); return; }
+    reviewed[q.id] = true;
+    render();
+  }
+
+  // ---------- 交卷 ----------
+  async function finish() {
+    if (!confirm('确定交卷？未作答的题目将计为错误。')) return;
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
+
+    let correct = 0; const wrongList = [];
+    for (const q of QUESTIONS) {
+      const chosen = (answers[q.id] || []).slice().sort();
+      const correctSet = parseAnswer(q.answer);
+      const ok = arraysEqual(chosen, correctSet);
+      if (ok) correct++;
+      else wrongList.push({ q, chosen });
+    }
+    const total = QUESTIONS.length;
+    const rate = total ? Math.round((correct / total) * 100) : 0;
+
+    // 写入 exam_records
+    const { error: e1 } = await supabase.from('exam_records').insert({
+      student_name: STUDENT, chapter: CHAPTER, score: correct, total, correct_rate: rate
+    });
+    if (e1) toast('成绩保存失败：' + e1.message);
+
+    // 错题写入 wrong_books（upsert，同一人同一题 wrong_count +1）
+    if (wrongList.length) await recordWrong(wrongList.map(w => w.q.id));
+
+    showResult(correct, total, rate, wrongList);
+  }
+
+  async function recordWrong(questionIds) {
+    // 先取该生已有错题，便于 +1
+    const { data: existing } = await supabase
+      .from('wrong_books')
+      .select('question_id, wrong_count')
+      .eq('student_name', STUDENT)
+      .in('question_id', questionIds);
+    const map = {}; (existing || []).forEach(r => map[r.question_id] = r.wrong_count);
+
+    const rows = questionIds.map(qid => ({
+      student_name: STUDENT,
+      question_id: qid,
+      wrong_count: (map[qid] || 0) + 1
+    }));
+    // upsert 依赖 (student_name, question_id) 唯一约束；若无约束也能正常插入
+    const { error } = await supabase.from('wrong_books').upsert(rows, { onConflict: 'student_name,question_id' });
+    if (error) console.warn('错题记录失败', error.message);
+  }
+
+  // ---------- 成绩页 ----------
+  async function showResult(correct, total, rate, wrongList) {
+    let wrongHtml = '';
+    if (!wrongList.length) {
+      wrongHtml = '<p style="color:#16a34a;font-weight:600">太棒了，全部答对！</p>';
+    } else {
+      // 拉取解析（题目已在前端，直接用）
+      wrongHtml = wrongList.map(({ q, chosen }) => {
+        const correctSet = parseAnswer(q.answer);
+        return `<div class="wrong-item">
+          <div class="a">${escapeHtml(q.question)}</div>
+          <div>你的答案：<span class="pill err">${chosen.length ? chosen.sort().join('、') : '未作答'}</span>
+               正确答案：<span class="pill right">${correctSet.join('、')}</span></div>
+          <div class="explain">${q.explanation ? '解析：' + escapeHtml(q.explanation) : '（暂无解析）'}</div>
+        </div>`;
+      }).join('');
+    }
+
+    $('app').innerHTML = `
+      <div class="card result">
+        <div class="score-big">${rate}%</div>
+        <div class="muted">正确 ${correct} / 共 ${total} 题 · 章节：${escapeHtml(CHAPTER)}</div>
+      </div>
+      <div class="card">
+        <h3 style="margin-top:0">错题解析（${wrongList.length} 道）</h3>
+        ${wrongHtml}
+      </div>
+      <button onclick="location.href='index.html'">再来一组</button>
+      <button class="secondary" onclick="location.href='search.html'">题库搜索</button>
+      <button class="secondary" onclick="location.href='admin.html'">查看班级统计</button>
+    `;
+  }
+
+  // ---------- 小工具 ----------
+  function arraysEqual(a, b) { return a.length === b.length && a.every((v, i) => v === b[i]); }
+  function escapeHtml(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }
+
+  loadQuestions();
+  // 离开页面也清掉心跳
+  window.addEventListener('beforeunload', () => { if (heartbeatTimer) clearInterval(heartbeatTimer); });
+</script>
+</body>
+</html>

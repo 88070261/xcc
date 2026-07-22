@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>导入题库 · 考试训练系统</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif; background:#f5f6f8; color:#1f2933; line-height:1.6; }
+  .container { max-width:640px; margin:0 auto; padding:20px 16px 60px; }
+  h1 { font-size:22px; margin:8px 0 4px; }
+  .sub { color:#6b7280; font-size:14px; margin-bottom:16px; }
+  .card { background:#fff; border-radius:14px; padding:18px; box-shadow:0 1px 3px rgba(0,0,0,.08); margin-bottom:16px; }
+  #drop { border:2px dashed #cbd5e1; border-radius:14px; padding:36px 16px; text-align:center; color:#64748b; background:#fafbfc; cursor:pointer; }
+  #drop.drag { border-color:#2563eb; background:#eff6ff; color:#2563eb; }
+  button { width:100%; padding:14px; font-size:17px; font-weight:600; color:#fff; background:#2563eb; border:none; border-radius:12px; margin-top:14px; cursor:pointer; }
+  button:active { background:#1d4ed8; }
+  button:disabled { opacity:.5; }
+  button.secondary { background:#e5e7eb; color:#1f2933; }
+  .links { text-align:center; margin-top:14px; font-size:14px; }
+  .links a { color:#2563eb; text-decoration:none; margin:0 8px; }
+  .log { margin-top:12px; font-size:14px; white-space:pre-wrap; background:#0f172a; color:#e2e8f0; border-radius:10px; padding:12px; max-height:280px; overflow:auto; }
+  .muted { color:#6b7280; font-size:13px; }
+  .toast { position:fixed; left:50%; bottom:24px; transform:translateX(-50%); background:#111827; color:#fff; padding:10px 16px; border-radius:10px; font-size:14px; opacity:0; transition:.3s; pointer-events:none; z-index:99; }
+  .toast.show { opacity:1; }
+  code { background:#f1f5f9; padding:1px 5px; border-radius:4px; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>导入题库</h1>
+  <div class="sub">上传整理好的 Excel / CSV，自动解析并写入 questions 表</div>
+
+  <div class="card">
+    <div id="drop">
+      <div style="font-size:40px">📥</div>
+      <div>点击选择，或把文件拖到这里</div>
+      <div class="muted">支持 .xlsx / .xls / .csv</div>
+      <input type="file" id="file" accept=".xlsx,.xls,.csv" style="display:none" />
+    </div>
+    <button id="importBtn" disabled>开始导入</button>
+    <p class="muted" style="margin-top:10px">预期表头：编号 / 题型 / 题目 / 选项 / 答案 / 难度 / 知识点 / 来源。其中「选项」按行拆分到 option_a~d，「答案」提取字母，「难度」映射为 1/2/3，「知识点」作为章节。</p>
+  </div>
+
+  <div class="card hidden" id="resultCard">
+    <h2 style="margin-top:0">导入结果</h2>
+    <div id="resultText"></div>
+    <div class="log" id="log"></div>
+  </div>
+
+  <div class="links">
+    <a href="index.html">学生首页</a> · <a href="admin.html">老师统计</a>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<!-- SheetJS (xlsx) -->
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<!-- ============ Supabase 初始化（替换下面两个常量即可接入你的项目） ============ -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+  const SUPABASE_URL = 'https://qfpdjtjstqpeawmzesrl.supabase.co';
+  const SUPABASE_ANON_KEY = 'sb_publishable_Rl7i4y-_sQE8J8U1_3eieQ_gfkywzMk';
+  const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+</script>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  function toast(msg) { const t = $('toast'); t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2200); }
+
+  let parsedRows = [];
+
+  const drop = $('drop');
+  drop.addEventListener('click', () => $('file').click());
+  drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('drag'); });
+  drop.addEventListener('dragleave', () => drop.classList.remove('drag'));
+  drop.addEventListener('drop', e => { e.preventDefault(); drop.classList.remove('drag'); if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]); });
+  $('file').addEventListener('change', e => { if (e.target.files[0]) handleFile(e.target.files[0]); });
+
+  // ---------- 解析 Excel / CSV ----------
+  function handleFile(file) {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const wb = XLSX.read(new Uint8Array(e.target.result), { type: 'array' });
+        const ws = wb.Sheets[wb.SheetNames[0]]; // 取第一个工作表
+        const json = XLSX.utils.sheet_to_json(ws, { defval: '' });
+        const { rows, warns, skipped } = transform(json);
+        parsedRows = rows;
+        $('importBtn').disabled = rows.length === 0;
+        $('resultCard').classList.remove('hidden');
+        $('resultText').innerHTML = `解析完成：有效 <b>${rows.length}</b> 条，跳过 <b>${skipped}</b> 条${warns ? `，<span style="color:#b45309">注意 ${warns} 道题选项超过 9 个（仅保留前 9 个）</span>` : ''}。`;
+        $('log').textContent = rows.length ? `示例首行：\n${JSON.stringify(rows[0], null, 2)}` : '没有可导入的数据，请检查表头。';
+        toast(`已解析 ${rows.length} 条`);
+      } catch (err) {
+        toast('解析失败：' + err.message);
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  }
+
+  // 难度：简单->1, 中等->2, 难/困难->3
+  function mapDifficulty(raw) {
+    const s = String(raw || '').trim();
+    if (/^简单/.test(s)) return 1;
+    if (/^中等/.test(s)) return 2;
+    if (/^(难|困难)/.test(s)) return 3;
+    const n = Number(s); return Number.isFinite(n) && s !== '' ? n : 1;
+  }
+
+  // 选项列：option_a ~ option_i，支持 4~9 个选项
+  const OPT_KEYS = ['option_a', 'option_b', 'option_c', 'option_d', 'option_e', 'option_f', 'option_g', 'option_h', 'option_i'];
+
+  function transform(json) {
+    let warns = 0, skipped = 0; const rows = [];
+    for (const r of json) {
+      const id = Number(r['编号']);
+      const question = String(r['题目'] ?? '').trim();
+      if (!question) { skipped++; continue; }
+      const chapter = String(r['知识点'] ?? r['章节'] ?? '').trim();
+      const difficulty = mapDifficulty(r['难度']);
+      const optRaw = String(r['选项'] ?? '').trim();
+      const ansRaw = String(r['答案'] ?? '').trim();
+
+      // 先建好一行，9 个选项默认 null
+      const row = { id: Number.isFinite(id) ? id : null, question, chapter, difficulty, explanation: '' };
+      OPT_KEYS.forEach(k => row[k] = null);
+
+      // 判断题：答案为 正确/错误/错/对
+      if (['正确', '错误', '错', '对'].includes(ansRaw)) {
+        row.option_a = '正确'; row.option_b = '错误';
+        row.answer = (ansRaw === '正确' || ansRaw === '对') ? 'A' : 'B';
+        rows.push(row); continue;
+      }
+
+      // 选项：按行拆分，去掉开头 "X. " 之类前缀，最多取 9 个
+      const lines = optRaw.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+      lines.slice(0, 9).forEach((ln, i) => { row[OPT_KEYS[i]] = ln.replace(/^[A-Ia-i][.、．)]\s*/, '').trim() || ln; });
+      if (lines.length > 9) warns++;
+
+      // 答案：提取每行首字母，逗号连接（支持多选）
+      const ansLines = ansRaw.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+      let letters = ansLines.map(l => (l.match(/^([A-Ia-i])/) || [])[1]).filter(Boolean).map(x => x.toUpperCase());
+      if (!letters.length) { const m = ansRaw.match(/^([A-Ia-i])/); if (m) letters = [m[1].toUpperCase()]; }
+      row.answer = letters.join(',');
+
+      rows.push(row);
+    }
+    return { rows, warns, skipped };
+  }
+
+  // ---------- 批量写入 Supabase ----------
+  $('importBtn').addEventListener('click', async () => {
+    if (!parsedRows.length) { toast('没有可导入的数据'); return; }
+    if (!confirm(`确认将 ${parsedRows.length} 道题写入 questions 表？\n（已存在相同 id 会更新，使用 upsert）`)) return;
+    $('importBtn').disabled = true;
+    $('log').textContent = '开始导入…';
+    let ok = 0, fail = 0; const errs = [];
+    const BATCH = 100;
+    for (let i = 0; i < parsedRows.length; i += BATCH) {
+      const chunk = parsedRows.slice(i, i + BATCH).map(r => {
+        const o = { ...r };
+        if (o.id == null) delete o.id; // 无编号时交给数据库自增，避免 NULL 主键
+        return o;
+      });
+      const { error } = await supabase.from('questions').upsert(chunk, { onConflict: 'id' });
+      if (error) { fail += chunk.length; errs.push(error.message); $('log').textContent += `\n第 ${i + 1}-${i + chunk.length} 批失败：${error.message}`; }
+      else { ok += chunk.length; $('log').textContent += `\n已写入 ${ok} / ${parsedRows.length}`; }
+    }
+    $('resultText').innerHTML = `导入完成 ✅ 成功 <b>${ok}</b> 条，失败 <b>${fail}</b> 条。` +
+      (errs.length ? `<div class="muted" style="margin-top:8px">错误：${errs[0]}</div>` : '');
+    if (fail === 0) toast('全部导入成功！');
+    $('importBtn').disabled = false;
+  });
+</script>
+</body>
+</html>

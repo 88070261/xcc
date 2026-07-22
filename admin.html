@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>老师统计 · 考试训练系统</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif; background:#f5f6f8; color:#1f2933; line-height:1.6; }
+  .container { max-width:760px; margin:0 auto; padding:20px 16px 60px; }
+  h1 { font-size:22px; margin:8px 0 4px; }
+  .sub { color:#6b7280; font-size:14px; margin-bottom:16px; }
+  .card { background:#fff; border-radius:14px; padding:18px; box-shadow:0 1px 3px rgba(0,0,0,.08); margin-bottom:16px; }
+  h2 { font-size:17px; margin:0 0 12px; }
+  input[type=password] { width:100%; padding:12px 14px; font-size:16px; border:1px solid #d9dee5; border-radius:10px; }
+  button { padding:12px 18px; font-size:16px; font-weight:600; color:#fff; background:#2563eb; border:none; border-radius:10px; margin-top:12px; cursor:pointer; }
+  button:active { background:#1d4ed8; }
+  button.secondary { background:#e5e7eb; color:#1f2933; }
+  .links { text-align:center; margin-top:14px; font-size:14px; }
+  .links a { color:#2563eb; text-decoration:none; margin:0 8px; }
+  .online { display:inline-block; background:#dcfce7; color:#166534; border-radius:8px; padding:4px 10px; font-size:14px; margin:4px 6px 0 0; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th, td { padding:9px 10px; border-bottom:1px solid #eee; text-align:left; }
+  th { background:#f8fafc; font-weight:600; }
+  .muted { color:#6b7280; font-size:13px; }
+  .hidden { display:none; }
+  .toast { position:fixed; left:50%; bottom:24px; transform:translateX(-50%); background:#111827; color:#fff; padding:10px 16px; border-radius:10px; font-size:14px; opacity:0; transition:.3s; pointer-events:none; z-index:99; }
+  .toast.show { opacity:1; }
+</style>
+</head>
+<body>
+<div class="container">
+  <!-- 登录门 -->
+  <div class="card" id="loginBox">
+    <h1>老师统计后台</h1>
+    <div class="sub">请输入管理密码</div>
+    <input type="password" id="pwd" placeholder="管理密码" />
+    <button id="loginBtn">进入</button>
+    <p class="muted" style="margin-top:12px">默认密码：123456（写在 JS 里，可自行修改）</p>
+  </div>
+
+  <!-- 面板 -->
+  <div id="dash" class="hidden">
+    <h1>班级数据看板</h1>
+    <div class="sub">实时在线 · 章节成绩 · 高频错题</div>
+
+    <div class="card">
+      <h2>面板 1 · 当前在线学生（近 5 分钟）</h2>
+      <div id="online">加载中…</div>
+    </div>
+
+    <div class="card">
+      <h2>面板 2 · 各章节成绩统计</h2>
+      <div id="chapterStat" style="overflow-x:auto">加载中…</div>
+    </div>
+
+    <div class="card">
+      <h2>面板 3 · 全班高频错题 Top 10</h2>
+      <div id="wrongStat" style="overflow-x:auto">加载中…</div>
+    </div>
+
+    <div class="links">
+      <a href="index.html">学生首页</a> · <a href="import.html">导入题库</a>
+      <br/><button class="secondary" id="refreshBtn" style="margin-top:14px">刷新数据</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<!-- ============ Supabase 初始化（替换下面两个常量即可接入你的项目） ============ -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+  const SUPABASE_URL = 'https://qfpdjtjstqpeawmzesrl.supabase.co';
+  const SUPABASE_ANON_KEY = 'sb_publishable_Rl7i4y-_sQE8J8U1_3eieQ_gfkywzMk';
+  const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+</script>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  function toast(msg) { const t = $('toast'); t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2200); }
+
+  // ===== 简单密码验证（按需修改） =====
+  const ADMIN_PASSWORD = '123456';
+
+  $('loginBtn').addEventListener('click', () => {
+    if ($('pwd').value === ADMIN_PASSWORD) {
+      $('loginBox').classList.add('hidden');
+      $('dash').classList.remove('hidden');
+      refreshAll();
+    } else {
+      toast('密码错误');
+    }
+  });
+  $('pwd').addEventListener('keydown', e => { if (e.key === 'Enter') $('loginBtn').click(); });
+  $('refreshBtn').addEventListener('click', refreshAll);
+
+  // ===== 面板 1：近 5 分钟在线 =====
+  async function loadOnline() {
+    const since = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    const { data, error } = await supabase
+      .from('user_status')
+      .select('student_name, current_chapter, last_active')
+      .gte('last_active', since)
+      .order('last_active', { ascending: false });
+    if (error) { $('online').textContent = '加载失败：' + error.message; return; }
+    if (!data || !data.length) { $('online').innerHTML = '<span class="muted">当前没有在线学生</span>'; return; }
+    $('online').innerHTML = data.map(r =>
+      `<span class="online">${escapeHtml(r.student_name)}<br/><span class="muted">${escapeHtml(r.current_chapter || '未指定章节')}</span></span>`
+    ).join('');
+  }
+
+  // ===== 面板 2：各章节平均正确率 / 最高分 / 最低分 =====
+  async function loadChapterStat() {
+    const { data, error } = await supabase.from('exam_records').select('chapter, score, total, correct_rate');
+    if (error) { $('chapterStat').textContent = '加载失败：' + error.message; return; }
+    if (!data || !data.length) { $('chapterStat').innerHTML = '<span class="muted">暂无考试记录</span>'; return; }
+    const agg = {};
+    for (const r of data) {
+      const c = r.chapter || '未分类';
+      if (!agg[c]) agg[c] = { n: 0, rateSum: 0, max: -Infinity, min: Infinity };
+      const a = agg[c];
+      a.n++; a.rateSum += Number(r.correct_rate || 0);
+      a.max = Math.max(a.max, Number(r.score || 0));
+      a.min = Math.min(a.min, Number(r.score || 0));
+    }
+    const rows = Object.entries(agg).map(([c, a]) => `
+      <tr><td>${escapeHtml(c)}</td><td>${a.n}</td><td>${Math.round(a.rateSum / a.n)}%</td><td>${a.max}</td><td>${a.min}</td></tr>
+    `).join('');
+    $('chapterStat').innerHTML = `
+      <table><thead><tr><th>章节</th><th>练习人次</th><th>平均正确率</th><th>最高分</th><th>最低分</th></tr></thead>
+      <tbody>${rows}</tbody></table>`;
+  }
+
+  // ===== 面板 3：高频错题 Top 10（wrong_books 联查 questions） =====
+  async function loadWrongStat() {
+    const { data, error } = await supabase
+      .from('wrong_books')
+      .select('question_id, wrong_count, questions(question, chapter)')
+      .order('wrong_count', { ascending: false })
+      .limit(10);
+    if (error) { $('wrongStat').textContent = '加载失败：' + error.message; return; }
+    if (!data || !data.length) { $('wrongStat').innerHTML = '<span class="muted">暂无错题记录</span>'; return; }
+    const rows = data.map((r, i) => {
+      const q = r.questions || {};
+      return `<tr><td>${i + 1}</td><td>${escapeHtml(q.chapter || '')}</td><td>${escapeHtml(q.question || '(题目已删除)')}</td><td>${r.wrong_count}</td></tr>`;
+    }).join('');
+    $('wrongStat').innerHTML = `
+      <table><thead><tr><th>#</th><th>章节</th><th>题目</th><th>错误次数</th></tr></thead>
+      <tbody>${rows}</tbody></table>`;
+  }
+
+  function refreshAll() { loadOnline(); loadChapterStat(); loadWrongStat(); }
+
+  function escapeHtml(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }
+</script>
+</body>
+</html>
