@@ -106,6 +106,7 @@
   const SELECT_COLS = 'id, question, option_a, option_b, option_c, option_d, option_e, option_f, option_g, option_h, option_i, answer, chapter, difficulty, explanation';
 
   async function loadQuestions() {
+   try {
     let rows = null, baseErr = null;
 
     if (WRONG) {
@@ -140,6 +141,10 @@
     heartbeatTimer = setInterval(heartbeat, 30000);
     idx = 0;
     render();
+   } catch (err) {
+    const ld = document.getElementById('loading');
+    if (ld) ld.innerHTML = '⚠️ 加载出错：' + escapeHtml(err.message) + '<br><br><button onclick="location.href=\'index.html\'">返回首页</button>';
+   }
   }
 
   // ---------- 渲染单题 ----------
@@ -299,7 +304,13 @@
   function arraysEqual(a, b) { return a.length === b.length && a.every((v, i) => v === b[i]); }
   function escapeHtml(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }
 
-  loadQuestions();
+  // 初始化守卫：CDN/网络异常时给出明确提示，而不是卡在“加载中”
+  if (typeof supabase === 'undefined' || !supabase) {
+    const ld = document.getElementById('loading');
+    if (ld) ld.innerHTML = '⚠️ 无法连接 Supabase，请确认网络可访问 cdn.jsdelivr.net 后刷新重试。';
+  } else {
+    loadQuestions();
+  }
   // 离开页面也清掉心跳
   window.addEventListener('beforeunload', () => { if (heartbeatTimer) clearInterval(heartbeatTimer); });
 </script>

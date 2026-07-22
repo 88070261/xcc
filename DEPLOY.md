@@ -50,6 +50,59 @@ create policy "anon insert questions"
 > alter table wrong_books add constraint wrong_books_uniq unique (student_name, question_id);
 > ```
 
+### 整合初始化 SQL（在 SQL Editor 一次性执行）
+
+把下面整段粘贴到 Supabase 后台 **SQL Editor** 运行即可，包含：开 `questions` 读取策略（**学生端能练习的前提**）、加 `option_e~i` 列、`questions` 写入策略、`wrong_books` 唯一约束（均已做幂等处理，重复执行不会报错）：
+
+```sql
+-- 1) 允许匿名读取 questions（学生端练习/搜索必须，否则 anon 查不到任何题目）
+do $$
+begin
+  if not exists (
+    select 1 from pg_policies
+    where schemaname='public' and tablename='questions' and policyname='anon select questions'
+  ) then
+    create policy "anon select questions"
+      on questions for select
+      to anon
+      using (true);
+  end if;
+end $$;
+
+-- 2) 增加多选项列（支持 4~9 个选项）
+alter table questions
+  add column if not exists option_e text,
+  add column if not exists option_f text,
+  add column if not exists option_g text,
+  add column if not exists option_h text,
+  add column if not exists option_i text;
+
+-- 3) 允许匿名写入 questions（后续用 import.html 前端导入时需要；本次已用 service_role 后端导入，可二选一）
+do $$
+begin
+  if not exists (
+    select 1 from pg_policies
+    where schemaname='public' and tablename='questions' and policyname='anon insert questions'
+  ) then
+    create policy "anon insert questions"
+      on questions for insert
+      to anon
+      with check (true);
+  end if;
+end $$;
+
+-- 4) wrong_books 错题累加所需的唯一约束（Postgres 不支持 ADD CONSTRAINT IF NOT EXISTS，用 DO 块判断）
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname='wrong_books_uniq' and conrelid='wrong_books'::regclass
+  ) then
+    alter table wrong_books add constraint wrong_books_uniq unique (student_name, question_id);
+  end if;
+end $$;
+```
+
 ---
 
 ## 三、部署到 Cloudflare Pages（3 种方式）
